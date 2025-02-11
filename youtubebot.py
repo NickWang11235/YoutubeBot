@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import re
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -29,6 +30,9 @@ except ValueError:
 
 bot = commands.Bot(command_prefix=PREFIX, intents=discord.Intents(voice_states=True, guilds=True, guild_messages=True, message_content=True))
 queues = {} # {server_id: 'queue': [(vid_file, info), ...], 'loop': bool}
+white_list = [351457752108892172, 209907269050040320]
+#white_list = []
+black_list = []
 
 def main():
     if TOKEN is None:
@@ -103,6 +107,7 @@ async def play(ctx: commands.Context, *args):
                            'outtmpl': '%(id)s.%(ext)s',
                            'noplaylist': True,
                            'allow_playlist_files': False,
+                           'cookiefile': "./cookies.firefox-private.txt",
                            # 'progress_hooks': [lambda info, ctx=ctx: video_progress_hook(ctx, info)],
                            # 'match_filter': lambda info, incomplete, will_need_search=will_need_search, ctx=ctx: start_hook(ctx, info, incomplete, will_need_search),
                            'paths': {'home': f'./dl/{server_id}'}}) as ydl:
@@ -115,7 +120,7 @@ async def play(ctx: commands.Context, *args):
         if 'entries' in info:
             info = info['entries'][0]
         # send link if it was a search, otherwise send title as sending link again would clutter chat with previews
-        await ctx.send('downloading ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
+        await ctx.send('queuing up ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
         try:
             ydl.download([query])
         except yt_dlp.utils.DownloadError as err:
@@ -124,8 +129,10 @@ async def play(ctx: commands.Context, *args):
         path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
         try:
             queues[server_id]['queue'].append((path, info))
+            print("Queue size: " + str(len(queues[server_id]['queue'])))
         except KeyError: # first in queue
             queues[server_id] = {'queue': [(path, info)], 'loop': False}
+            print("Queue size: " + str(len(queues[server_id]['queue'])))
             try: connection = await voice_state.channel.connect()
             except discord.ClientException: connection = get_voice_client_from_channel_id(voice_state.channel.id)
             connection.play(discord.FFmpegOpusAudio(path), after=lambda error=None, connection=connection, server_id=server_id:
@@ -148,30 +155,43 @@ def get_voice_client_from_channel_id(channel_id: int):
     for voice_client in bot.voice_clients:
         if voice_client.channel.id == channel_id:
             return voice_client
-
+           
 def after_track(error, connection, server_id):
     if error is not None:
         print(error)
     try:
         last_video_path = queues[server_id]['queue'][0][0]
-        if not queues[server_id]['loop']:
-            os.remove(last_video_path)
+        if not queues[server_id]['loop']:         
+            # os.remove(last_video_path)
             queues[server_id]['queue'].pop(0)
     except KeyError: return # probably got disconnected
+    except error:
+        print(error)
     if last_video_path not in [i[0] for i in queues[server_id]['queue']]: # check that the same video isn't queued multiple times
-        try: os.remove(last_video_path)
+        try: 
+            pass
+            # os.remove(last_video_path)
         except FileNotFoundError: pass
-    try: connection.play(discord.FFmpegOpusAudio(queues[server_id]['queue'][0][0]), after=lambda error=None, connection=connection, server_id=server_id:
+    try:
+        print("playing next track") 
+        connection.play(discord.FFmpegOpusAudio(queues[server_id]['queue'][0][0]), after=lambda error=None, connection=connection, server_id=server_id:
                                                                           after_track(error, connection, server_id))
     except IndexError: # that was the last item in queue
         queues.pop(server_id) # directory will be deleted on disconnect
         asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
+        
 
 async def safe_disconnect(connection):
     if not connection.is_playing():
         await connection.disconnect()
 
 async def sense_checks(ctx: commands.Context, voice_state=None) -> bool:
+    if white_list and not (ctx.author.id in white_list):
+        await ctx.send('suck my dick. make ur own bot')
+        return False
+    if ctx.author.id in black_list:
+        await ctx.send('suck my dick. make ur own bot')
+        return False
     if voice_state is None: voice_state = ctx.author.voice
     if voice_state is None:
         await ctx.send('you have to be in a voice channel to use this command')
@@ -193,7 +213,8 @@ async def on_voice_state_update(member: discord.User, before: discord.VoiceState
         server_id = before.channel.guild.id
         try: queues.pop(server_id)
         except KeyError: pass
-        try: shutil.rmtree(f'./dl/{server_id}/')
+        try: #shutil.rmtree(f'./dl/{server_id}/')
+            pass
         except FileNotFoundError: pass
 
 @bot.event
@@ -226,6 +247,13 @@ async def notify_about_failure(ctx: commands.Context, err: yt_dlp.utils.Download
 
 if __name__ == '__main__':
     try:
+        dl_size = sum(file.stat().st_size for file in Path("./dl/").rglob('*'))
+        print(f'current dl size: {dl_size}')
+        if dl_size > 268435456:
+            print('removing cached dl files')
+            try: 
+                shutil.rmtree(f'./dl/')
+            except FileNotFoundError: pass
         sys.exit(main())
     except SystemError as error:
         if PRINT_STACK_TRACE:
