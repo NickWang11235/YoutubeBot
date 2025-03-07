@@ -3,3 +3,4 @@ ignore/
 __pycache__
 nohup.out
 .env
+cookies.firefox-private.txt

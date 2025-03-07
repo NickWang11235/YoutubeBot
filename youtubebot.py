@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 import discord
+import json
 from discord.ext import commands
 import yt_dlp
 import urllib
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 PREFIX = os.getenv('BOT_PREFIX', '.')
-YTDL_FORMAT = os.getenv('YTDL_FORMAT', 'worstaudio')
+YTDL_FORMAT = os.getenv('YTDL_FORMAT', 'bestaudio')
 PRINT_STACK_TRACE = os.getenv('PRINT_STACK_TRACE', '1').lower() in ('true', 't', '1')
 BOT_REPORT_COMMAND_NOT_FOUND = os.getenv('BOT_REPORT_COMMAND_NOT_FOUND', '1').lower() in ('true', 't', '1')
 BOT_REPORT_DL_ERROR = os.getenv('BOT_REPORT_DL_ERROR', '0').lower() in ('true', 't', '1')
@@ -30,17 +31,119 @@ except ValueError:
 
 bot = commands.Bot(command_prefix=PREFIX, intents=discord.Intents(voice_states=True, guilds=True, guild_messages=True, message_content=True))
 queues = {} # {server_id: 'queue': [(vid_file, info), ...], 'loop': bool}
-white_list = [351457752108892172, 209907269050040320]
-#white_list = []
-black_list = []
+#white_list = [351457752108892172, 209907269050040320, 201098387058196481, 207987195707916288]
+
+with open('users/users.json') as json_data:
+    data = json.load(json_data)
+    json_data.close()
+super_admin = set(data['super_admin'])
+admin = set(data['admin'])
+whitelist = set(data['whitelist'])
+blacklist = set(data['blacklist'])
+print(f'super admin: {super_admin}')
+print(f'admin: {admin}')
+print(f'loaded {len(whitelist)} whitelisted users and {len(blacklist)} blacklisted users')
+print(f'whitelist: {whitelist}\nblacklist: {blacklist}')
 
 def main():
     if TOKEN is None:
         return ("no token provided. Please create a .env file containing the token.\n"
                 "for more information view the README.md")
-    try: bot.run(TOKEN)
+    try: 
+        bot.run(TOKEN)
     except discord.PrivilegedIntentsRequired as error:
         return error
+    
+@bot.command(name='admin', aliases=['a'])
+async def addadmin(ctx: commands.Context, *args):
+    if ctx.author.id not in super_admin:
+        await ctx.send('you are not a super admin')
+        return
+    
+    if len(args) == 0:
+        await ctx.send(f'admin: {admin}')
+        return
+    
+    for user in args:
+        try:
+            admin.add(int(user))
+            await ctx.send(f'added {user} to admin')
+        except Exception:
+            await ctx.send(f'failed to add {user} to admin')
+    write_json()
+
+@bot.command(name='unadmin', aliases=['ua'])
+async def unadmin(ctx: commands.Context, *args):
+    if ctx.author.id not in super_admin:
+        await ctx.send('you are not a super admin')
+        return
+    
+    if len(args) == 0:
+        await ctx.send('you have to provide a user id to unadmin')
+        return
+    else:
+        for user in args:
+            try:
+                if int(user) in admin:
+                    admin.remove(int(user))
+                    await ctx.send(f'removed {user} from admin')
+                else:
+                    await ctx.send(f'{user} is not a admin')
+            except Exception:
+                await ctx.send(f'failed to remove {user} from admin')
+    write_json()
+
+@bot.command(name='ban', aliases=['b'])
+async def ban(ctx: commands.Context, *args):
+    if ctx.author.id not in admin:
+        await ctx.send('you are not an admin')
+        return
+    
+    if len(args) == 0:
+        await ctx.send(f'blacklist: {blacklist}')
+        return
+    
+    for user in args:
+        try:
+            blacklist.add(int(user))
+            await ctx.send(f'added {user} to blacklist')
+        except Exception:
+            await ctx.send(f'failed to add {user} to blacklist')
+    write_json()
+
+@bot.command(name='unban', aliases=['ub'])
+async def unban(ctx: commands.Context, *args):
+    if ctx.author.id not in admin:
+        await ctx.send('you are not an admin')
+        return
+    
+    if len(args) == 0:
+        await ctx.send('you have to provide a user id to unban')
+        return
+    if len(args) == 1 and args[0] == 'all':
+        blacklist.clear()
+        await ctx.send('cleared blacklist')
+    else:
+        for user in args:
+            try:
+                if int(user) in blacklist:
+                    blacklist.remove(int(user))
+                    await ctx.send(f'removed {user} from blacklist')
+                else:
+                    await ctx.send(f'{user} is not in blacklist')
+            except Exception:
+                await ctx.send(f'failed to remove {user} from blacklist')
+    write_json()
+        
+
+def write_json():
+    with open('users/users.json', 'w') as json_data:
+        data['super_admin'] = list(super_admin)
+        data['admin'] = list(admin)
+        data['whitelist'] = list(whitelist)
+        data['blacklist'] = list(blacklist)
+        json.dump(data, json_data)
+        json_data.close()
 
 @bot.command(name='queue', aliases=['q'])
 async def queue(ctx: commands.Context, *args):
@@ -121,22 +224,25 @@ async def play(ctx: commands.Context, *args):
             info = info['entries'][0]
         # send link if it was a search, otherwise send title as sending link again would clutter chat with previews
         await ctx.send('queuing up ' + (f'https://youtu.be/{info["id"]}' if will_need_search else f'`{info["title"]}`'))
+        # try:
+        #     ydl.download([query])
+        # except yt_dlp.utils.DownloadError as err:
+        #     await notify_about_failure(ctx, err)
+        #     return
+        path = info['url']
         try:
-            ydl.download([query])
-        except yt_dlp.utils.DownloadError as err:
-            await notify_about_failure(ctx, err)
-            return
-        path = f'./dl/{server_id}/{info["id"]}.{info["ext"]}'
-        try:
-            queues[server_id]['queue'].append((path, info))
+            queues[server_id]['queue'].append(path)
             print("Queue size: " + str(len(queues[server_id]['queue'])))
         except KeyError: # first in queue
-            queues[server_id] = {'queue': [(path, info)], 'loop': False}
+            queues[server_id] = {'queue': [path], 'loop': False}
             print("Queue size: " + str(len(queues[server_id]['queue'])))
             try: connection = await voice_state.channel.connect()
             except discord.ClientException: connection = get_voice_client_from_channel_id(voice_state.channel.id)
-            connection.play(discord.FFmpegOpusAudio(path), after=lambda error=None, connection=connection, server_id=server_id:
-                                                             after_track(error, connection, server_id))
+            # connection.play(discord.FFmpegOpusAudio(path), after=lambda error=None, connection=connection, server_id=server_id:
+            #                                                  after_track(error, connection, server_id))
+            ffmpeg_options = {'options': '-vn'}
+            connection.play(discord.FFmpegOpusAudio(path, **ffmpeg_options), after=lambda error=None, connection=connection, server_id=server_id:
+                                                    after_track(error, connection, server_id))
 
 @bot.command('loop', aliases=['l'])
 async def loop(ctx: commands.Context, *args):
@@ -160,7 +266,7 @@ def after_track(error, connection, server_id):
     if error is not None:
         print(error)
     try:
-        last_video_path = queues[server_id]['queue'][0][0]
+        last_video_path = queues[server_id]['queue'][0]
         if not queues[server_id]['loop']:         
             # os.remove(last_video_path)
             queues[server_id]['queue'].pop(0)
@@ -174,24 +280,31 @@ def after_track(error, connection, server_id):
         except FileNotFoundError: pass
     try:
         print("playing next track") 
-        connection.play(discord.FFmpegOpusAudio(queues[server_id]['queue'][0][0]), after=lambda error=None, connection=connection, server_id=server_id:
+        connection.play(discord.FFmpegOpusAudio(queues[server_id]['queue'][0]), after=lambda error=None, connection=connection, server_id=server_id:
                                                                           after_track(error, connection, server_id))
     except IndexError: # that was the last item in queue
         queues.pop(server_id) # directory will be deleted on disconnect
         asyncio.run_coroutine_threadsafe(safe_disconnect(connection), bot.loop).result()
+
         
 
 async def safe_disconnect(connection):
     if not connection.is_playing():
         await connection.disconnect()
 
+
+async def auth_check(ctx: commands.Context) -> bool:
+    if whitelist and not (ctx.author.id in whitelist):
+        await ctx.send('suck my dick. make ur own bot')
+        return False
+    if ctx.author.id in blacklist:
+        await ctx.send('fuck you bilal')
+        return False
+    return True
+    
 async def sense_checks(ctx: commands.Context, voice_state=None) -> bool:
-    if white_list and not (ctx.author.id in white_list):
-        await ctx.send('suck my dick. make ur own bot')
-        return False
-    if ctx.author.id in black_list:
-        await ctx.send('suck my dick. make ur own bot')
-        return False
+    auth_check_result = await auth_check(ctx)
+    if not auth_check_result: return False
     if voice_state is None: voice_state = ctx.author.voice
     if voice_state is None:
         await ctx.send('you have to be in a voice channel to use this command')
@@ -247,15 +360,8 @@ async def notify_about_failure(ctx: commands.Context, err: yt_dlp.utils.Download
 
 if __name__ == '__main__':
     try:
-        dl_size = sum(file.stat().st_size for file in Path("./dl/").rglob('*'))
-        print(f'current dl size: {dl_size}')
-        if dl_size > 268435456:
-            print('removing cached dl files')
-            try: 
-                shutil.rmtree(f'./dl/')
-            except FileNotFoundError: pass
         sys.exit(main())
-    except SystemError as error:
+    except SystemError as error:#
         if PRINT_STACK_TRACE:
             raise
         else:
